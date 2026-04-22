@@ -1,5 +1,7 @@
 # QTGNN-Finance
 
+[![Report](https://img.shields.io/badge/Report-PDF-red)](report.pdf)
+
 A hybrid Quantum-Temporal Graph Neural Network pipeline for stock price prediction, combining quantum computing, graph learning, and NLP sentiment analysis.
 
 ## Features
@@ -36,6 +38,4 @@ Three figures are saved automatically to `plots/`:
 
 ## Report
 
-[View full project report](file:///C:/Users/luigi/Downloads/report.html)
-
-> **Note:** the report link above is a local path. Replace it with a hosted URL (e.g. Google Drive, Overleaf, GitHub Pages) for public access.
+[View full project report (PDF)](report.pdf)
