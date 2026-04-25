@@ -36,7 +36,7 @@ TICKERS    : List[str] = ["AAPL", "MSFT", "GOOGL"]
 SEQ_LEN    : int       = 10
 N_WIRES    : int       = 4
 N_Q_LAYERS : int       = 2     # HEA depth per re-upload block
-N_REUP     : int       = 2     # data re-uploading repetitions
+N_REUP     : int       = 3     # data re-uploading repetitions
 GRU_HIDDEN : int       = 16
 CORR_WIN   : int       = 30    # rolling correlation window (days)
 BATCH_SIZE : int       = 8
@@ -147,27 +147,28 @@ for fi, (a, b, c, d) in enumerate(splits):
     log.info("  Fold %d: train [%d,%d)  val [%d,%d)", fi + 1, a, b, c, d)
 
 # ── Quantum Circuit: HEA with brick-wall CNOT (barren-plateau resistant) ──────
-#   Key improvements over StronglyEntanglingLayers:
-#   - Only nearest-neighbour CNOT (local entanglement)
-#   - Shallow depth (N_Q_LAYERS=2)
+#   - Nearest-neighbour CNOT only (local entanglement, shallow depth)
 #   - Local PauliZ observables (not global)
-#   - Data re-uploading for expressivity without extra depth
+#   - Data re-uploading (N_REUP=3) for Fourier expressivity
+#   - Equivariant weights: RY/RZ shared across wires per layer (reduces params, improves generalisation)
+#   - Rolling correlation encoded into wire 0 per re-upload block
 dev = qml.device("default.qubit", wires=N_WIRES)
 
 @qml.qnode(dev, interface="torch")
-def quantum_circuit(inputs: torch.Tensor, weights: torch.Tensor) -> List:
+def quantum_circuit(inputs: torch.Tensor, weights: torch.Tensor, corr: torch.Tensor) -> List:
     for r in range(N_REUP):
         for i in range(N_WIRES):
             qml.RY(inputs[i], wires=i)
+        qml.RY(corr, wires=0)          # encode rolling correlation into wire 0
         for d in range(N_Q_LAYERS):
             for i in range(N_WIRES):
-                qml.RY(weights[r, d, i, 0], wires=i)
-                qml.RZ(weights[r, d, i, 1], wires=i)
+                qml.RY(weights[r, d, 0], wires=i)   # equivariant: shared across wires
+                qml.RZ(weights[r, d, 1], wires=i)
             for i in range(d % 2, N_WIRES - 1, 2):   # alternating brick-wall
                 qml.CNOT(wires=[i, i + 1])
     return [qml.expval(qml.PauliZ(w)) for w in range(N_WIRES)]
 
-Q_WEIGHT_SHAPE: Tuple[int, ...] = (N_REUP, N_Q_LAYERS, N_WIRES, 2)
+Q_WEIGHT_SHAPE: Tuple[int, ...] = (N_REUP, N_Q_LAYERS, 2)   # equivariant: shared per layer
 
 # ── Graph attention helpers ───────────────────────────────────────────────────
 def add_self_loops_with_attr(
@@ -211,9 +212,9 @@ class QGATConv(MessagePassing):
         )
         self.norm = nn.LayerNorm(N_WIRES)
 
-    def _qforward(self, x: torch.Tensor) -> torch.Tensor:
+    def _qforward(self, x: torch.Tensor, corr: torch.Tensor) -> torch.Tensor:
         return torch.stack([
-            torch.stack(quantum_circuit(x[i], self.q_weights))
+            torch.stack(quantum_circuit(x[i], self.q_weights, corr[i]))
             for i in range(x.size(0))
         ]).float()  # (E, N_WIRES) — cast float64 PL output → float32
 
@@ -230,13 +231,14 @@ class QGATConv(MessagePassing):
         alpha = self.att(torch.cat([h[src], h[dst]], dim=-1)).squeeze(-1)
         alpha = F.leaky_relu(alpha, 0.2) * ea.squeeze(-1).abs()
         alpha = edge_softmax(alpha, dst, N)
-        return self.propagate(ei, h=h, alpha=alpha.unsqueeze(-1))
+        return self.propagate(ei, h=h, alpha=alpha.unsqueeze(-1), ea=ea)
 
-    def message(self, h_j: torch.Tensor, alpha: torch.Tensor) -> torch.Tensor:
-        return alpha * self._qforward(torch.tanh(h_j) * torch.pi)
+    def message(self, h_j: torch.Tensor, alpha: torch.Tensor, ea: torch.Tensor) -> torch.Tensor:
+        corr_angle = torch.tanh(ea.squeeze(-1)) * torch.pi
+        return alpha * self._qforward(torch.tanh(h_j) * torch.pi, corr_angle)
 
-    def update(self, aggr_out: torch.Tensor) -> torch.Tensor:
-        return self.norm(aggr_out)
+    def update(self, aggr_out: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
+        return self.norm(aggr_out + h)   # residual: mitigates barren-plateau gradient vanishing
 
 # ── Full QTGNN ────────────────────────────────────────────────────────────────
 class QTGNNModel(nn.Module):
@@ -255,7 +257,13 @@ class QTGNNModel(nn.Module):
 
 def make_model() -> Tuple[QTGNNModel, torch.optim.Adam]:
     m = QTGNNModel()
-    return m, torch.optim.Adam(m.parameters(), lr=LR)
+    q_params  = [p for n, p in m.named_parameters() if "q_weights" in n]
+    cl_params = [p for n, p in m.named_parameters() if "q_weights" not in n]
+    opt = torch.optim.Adam([
+        {"params": cl_params, "lr": LR},
+        {"params": q_params,  "lr": LR * 0.1},   # quantum params need smaller LR (QBGU)
+    ])
+    return m, opt
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 def sharpe(p: torch.Tensor, t: torch.Tensor) -> float:
