@@ -40,7 +40,8 @@ N_REUP     : int       = 3     # data re-uploading repetitions
 GRU_HIDDEN : int       = 16
 CORR_WIN   : int       = 30    # rolling correlation window (days)
 BATCH_SIZE : int       = 8
-EPOCHS     : int       = 3
+EPOCHS     : int       = 15
+PATIENCE   : int       = 5      # early stopping patience (val loss)
 LR         : float     = 1e-2
 N_FOLDS    : int       = 3
 VAL_SIZE   : int       = 15
@@ -310,6 +311,10 @@ for fold_i, (tr_s, tr_e, va_s, va_e) in enumerate(splits):
     model, optimizer = make_model()
     hist: Dict[str, List[float]] = {k: [] for k in ("tr_loss", "va_loss", "tr_sharpe", "va_sharpe")}
 
+    best_val      = float("inf")
+    best_state    = None
+    no_improve    = 0
+
     for epoch in range(1, EPOCHS + 1):
         trl, trs = run_epoch(tr_ld, model, optimizer, train=True)
         val, vas = run_epoch(va_ld, model, None,      train=False)
@@ -317,6 +322,19 @@ for fold_i, (tr_s, tr_e, va_s, va_e) in enumerate(splits):
             hist[key].append(v)
         log.info("  Epoch %d/%d | TrLoss=%.5f VaLoss=%.5f | TrSharpe=%+.3f VaSharpe=%+.3f",
                  epoch, EPOCHS, trl, val, trs, vas)
+
+        if val < best_val:
+            best_val   = val
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= PATIENCE:
+                log.info("  Early stopping at epoch %d (patience=%d)", epoch, PATIENCE)
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)   # restore best weights for this fold
 
     all_history.append(hist)
     last_model = model
@@ -360,7 +378,6 @@ for i, ticker in enumerate(TICKERS):
 os.makedirs(PLOTS_DIR, exist_ok=True)
 STOCK_COLORS = ["#4C9BE8", "#E8934C", "#6ABF6A"]
 FOLD_COLORS  = ["#7B68EE", "#FF8C69", "#20B2AA"]
-EPOCHS_X     = list(range(1, EPOCHS + 1))
 
 # ── Figure 1: Walk-forward training dashboard ─────────────────────────────────
 fig1, axes = plt.subplots(2, 2, figsize=(14, 9))
@@ -368,15 +385,17 @@ fig1.suptitle("QTGNN Walk-Forward Training Dashboard", fontsize=14, fontweight="
 
 ax = axes[0, 0]
 for fi, hist in enumerate(all_history):
-    ax.plot(EPOCHS_X, hist["tr_loss"], color=FOLD_COLORS[fi], ls="-",  label=f"F{fi+1} Train")
-    ax.plot(EPOCHS_X, hist["va_loss"], color=FOLD_COLORS[fi], ls="--", label=f"F{fi+1} Val")
+    ex = list(range(1, len(hist["tr_loss"]) + 1))   # actual epochs run (early stop aware)
+    ax.plot(ex, hist["tr_loss"], color=FOLD_COLORS[fi], ls="-",  label=f"F{fi+1} Train")
+    ax.plot(ex, hist["va_loss"], color=FOLD_COLORS[fi], ls="--", label=f"F{fi+1} Val")
 ax.set_title("MSE Loss"); ax.set_xlabel("Epoch"); ax.set_ylabel("Loss")
 ax.legend(fontsize=7); ax.grid(alpha=0.3)
 
 ax = axes[0, 1]
 for fi, hist in enumerate(all_history):
-    ax.plot(EPOCHS_X, hist["tr_sharpe"], color=FOLD_COLORS[fi], ls="-",  label=f"F{fi+1} Train")
-    ax.plot(EPOCHS_X, hist["va_sharpe"], color=FOLD_COLORS[fi], ls="--", label=f"F{fi+1} Val")
+    ex = list(range(1, len(hist["tr_sharpe"]) + 1))
+    ax.plot(ex, hist["tr_sharpe"], color=FOLD_COLORS[fi], ls="-",  label=f"F{fi+1} Train")
+    ax.plot(ex, hist["va_sharpe"], color=FOLD_COLORS[fi], ls="--", label=f"F{fi+1} Val")
 ax.axhline(0, color="gray", lw=0.8, ls=":")
 ax.set_title("Sharpe Ratio (annualised)"); ax.set_xlabel("Epoch"); ax.set_ylabel("Sharpe")
 ax.legend(fontsize=7); ax.grid(alpha=0.3)
