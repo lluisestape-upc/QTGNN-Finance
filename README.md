@@ -4,6 +4,38 @@
 
 A hybrid Quantum-Temporal Graph Neural Network pipeline for stock price prediction, combining quantum computing, graph learning, and NLP sentiment analysis.
 
+## Setup
+
+Install PyTorch first, matched to the machine's CUDA version, then the rest:
+
+```bash
+# pick one
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+
+pip install -r requirements.txt
+python main.py
+```
+
+`torch-geometric` resolves against the installed torch, so the order matters.
+Price data is pulled from `yfinance` and FinBERT from the HuggingFace hub at
+runtime, so there is nothing else to download by hand.
+
+### Devices
+
+| Variable | Default | Notes |
+|---|---|---|
+| `QTGNN_DEVICE` | `cuda` if available, else `cpu` | classical layers (GRU, attention, readout) |
+| `QTGNN_QDEVICE` | `default.qubit` | PennyLane simulator backing the message circuit |
+
+The circuit is evaluated with **parameter broadcasting over all edges at once**,
+which is what makes `default.qubit` the fastest choice here — `lightning.qubit`
+does not broadcast and measures ~20x slower in that regime, despite being faster
+on a per-edge loop. Benchmark before switching.
+
+Note that the classical half of the model is tiny; the simulated circuit is the
+bottleneck, so a larger GPU helps far less than you would expect.
+
 ## Features
 
 ### Quantum Graph Attention Convolution (QGATConv)

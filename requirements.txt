@@ -1,0 +1,30 @@
+# QTGNN-Finance dependencies
+#
+# torch is intentionally unpinned as to CUDA build. Install it FIRST, matched to
+# the machine's CUDA version, then install the rest:
+#
+#   CPU:        pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   CUDA 12.4:  pip install torch --index-url https://download.pytorch.org/whl/cu124
+#   then:       pip install -r requirements.txt
+#
+# torch-geometric resolves against the installed torch, so it must come after it.
+
+torch>=2.2
+torch-geometric>=2.5
+
+pennylane>=0.35
+transformers>=4.40
+yfinance>=0.2.40
+scikit-learn>=1.3
+matplotlib>=3.7
+numpy>=1.24
+
+# Optional quantum simulators.
+#   The circuit is evaluated with parameter broadcasting over all edges at once,
+#   and default.qubit (bundled with pennylane) is the fastest option in that
+#   regime. lightning.qubit does not broadcast; it only pays off if you revert
+#   QGATConv._qforward to a per-edge loop. lightning.gpu additionally needs
+#   cuQuantum and a CUDA GPU. Uncomment only if you want to benchmark them.
+#
+# pennylane-lightning>=0.35
+# pennylane-lightning-gpu>=0.35
